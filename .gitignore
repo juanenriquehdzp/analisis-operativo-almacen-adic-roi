@@ -1,0 +1,17 @@
+# Documentación de trabajo
+/Planteamiento del problema ADIC_ROI.txt
+
+# Bases y archivos de revisión internos
+/RevisionesExcel/
+
+#Publicaciones únicamente en PDF
+/Informes/*
+!/Informes/Diagnostico_ADIC_ROI_Compras_V3.pdf
+
+# Archivos temporales de office
+~$*
+*.tmp
+
+
+/Queries/MainQueryAdicRoi.sql
+

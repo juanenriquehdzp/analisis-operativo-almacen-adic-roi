@@ -1,0 +1,277 @@
+DECLARE @FECHA_CORTE  DATE = '2026-10-12'; -- Exclusiva
+DECLARE @FECHA_INICIO DATE = '2026-07-01';
+
+;WITH SEMANAS AS
+(
+    SELECT @FECHA_INICIO AS INICIO_SEMANA
+
+    UNION ALL
+
+    SELECT DATEADD(DAY, 7, INICIO_SEMANA)
+    FROM SEMANAS
+    WHERE DATEADD(DAY, 7, INICIO_SEMANA) < @FECHA_CORTE
+),
+
+--SALDOS_CORTE AS(
+--    SELECT
+--    ESTILO,      (SUM(ENTRADA-SALIDA)) INICIAL
+--    FROM
+--    EXISTENCIASDET(NOLOCK) ED
+--    LEFT JOIN ARTICULOS(NOLOCK) A
+--        ON  ED.articulo =   A.ARTICULO
+--    WHERE
+--    ED.tienda   =   '0093'
+--    AND ED.fecha    <   '2026-01-01'
+
+--    GROUP BY
+--    ESTILO
+--    HAVING
+--    (SUM(ENTRADA-SALIDA)<>0)
+--)
+
+--,
+
+BASE AS
+(
+    SELECT
+        ED.TIENDA,
+
+        COALESCE(
+            NULLIF(LTRIM(RTRIM(S.ID_SUCURSAL)), ''),
+            'SIN ALMACEN'
+        ) AS ALMACEN,
+
+        COALESCE(
+            NULLIF(LTRIM(RTRIM(
+                CASE
+                    WHEN F.NOM_RUBRO = 'ISHU'
+                        THEN 'CALZADO'
+                    WHEN F.NOM_RUBRO = 'ISHU ACC'
+                        THEN 'ACCESORIOS'
+                    WHEN F.NOM_RUBRO LIKE '%ROPA%'
+                        THEN 'ROPA'
+                    ELSE F.NOM_RUBRO
+                END
+            )), ''),
+            'SIN RUBRO'
+        ) AS AGRUP_RUBRO,
+
+        COALESCE(
+            NULLIF(LTRIM(RTRIM(A.MARCA)), ''),
+            'SIN MARCA'
+        ) AS MARCA,
+
+        COALESCE(
+            NULLIF(LTRIM(RTRIM(A.ESTILO)), ''),
+            'SIN ESTILO'
+        ) AS ESTILO,
+
+        ED.FECHA,
+        ED.TIPO,
+
+        ISNULL(ED.ENTRADA, 0) AS ENTRADA,
+        ISNULL(ED.SALIDA, 0) AS SALIDA
+
+    FROM EXISTENCIASDET ED
+
+    LEFT JOIN ARTICULOS A
+        ON ED.ARTICULO = A.ARTICULO
+
+    LEFT JOIN FAMILIAS_LEO F
+        ON A.FAMILIA = F.FAMILIA
+
+    LEFT JOIN SUCURSALES S
+        ON ED.TIENDA = S.CLAVE
+        AND S.ID_EMPRESA = 'BHERMANOS'
+
+    WHERE ED.TIENDA = '1046'
+      AND ED.FECHA < @FECHA_CORTE
+      --AND F.nom_rubro IN('CALZADO','ISHU','VIVA MODA', 'SALDOS')
+      AND (A.MARCA <> 'JAVAS' OR A.MARCA IS NULL)
+
+    -- No se excluyen artículos por estatus ACTIVO/DEPURADO.
+),
+
+RESUMEN_ESTILOS AS
+(
+    SELECT
+        TIENDA,
+        ALMACEN,
+        AGRUP_RUBRO,
+        MARCA,
+        ESTILO,
+
+        SUM(
+            CASE
+                WHEN FECHA < @FECHA_INICIO
+                    THEN ENTRADA - SALIDA
+                ELSE 0
+            END
+        ) AS SALDO_INICIAL_PERIODO,
+
+        MIN(CASE WHEN ENTRADA > 0 THEN FECHA END)
+            AS PRIMERA_ENTRADA_REGISTRADA,
+
+        MAX(CASE WHEN ENTRADA > 0 THEN FECHA END)
+            AS ULTIMA_ENTRADA_REGISTRADA,
+
+        MAX(CASE WHEN SALIDA > 0 THEN FECHA END)
+            AS ULTIMA_SALIDA_REGISTRADA
+
+    FROM BASE
+
+    GROUP BY
+        TIENDA,
+        ALMACEN,
+        AGRUP_RUBRO,
+        MARCA,
+        ESTILO
+),
+
+MOVIMIENTOS_SEMANALES AS
+(
+    SELECT
+        TIENDA,
+        ALMACEN,
+        AGRUP_RUBRO,
+        MARCA,
+        ESTILO,
+
+        DATEADD(
+            DAY,
+            (DATEDIFF(DAY, @FECHA_INICIO, FECHA) / 7) * 7,
+            @FECHA_INICIO
+        ) AS INICIO_SEMANA,
+
+        SUM(ENTRADA) AS ENTRADAS_SEMANA,
+        SUM(SALIDA) AS SALIDAS_SEMANA,
+
+        -- Permite distinguir despacho de otras salidas.
+        SUM(
+            CASE
+                WHEN TIPO = 'TRAENV' THEN SALIDA
+                ELSE 0
+            END
+        ) AS SALIDAS_TRAENV_SEMANA
+
+    FROM BASE
+
+    WHERE FECHA >= @FECHA_INICIO
+
+    GROUP BY
+        TIENDA,
+        ALMACEN,
+        AGRUP_RUBRO,
+        MARCA,
+        ESTILO,
+
+        DATEADD(
+            DAY,
+            (DATEDIFF(DAY, @FECHA_INICIO, FECHA) / 7) * 7,
+            @FECHA_INICIO
+        )
+),
+
+CALENDARIO AS
+(
+    SELECT
+        R.*,
+        S.INICIO_SEMANA,
+
+        CASE
+            WHEN DATEADD(DAY, 7, S.INICIO_SEMANA) > @FECHA_CORTE
+                THEN DATEADD(DAY, -1, @FECHA_CORTE)
+            ELSE DATEADD(DAY, 6, S.INICIO_SEMANA)
+        END AS FIN_SEMANA
+
+    FROM RESUMEN_ESTILOS R
+    CROSS JOIN SEMANAS S
+),
+
+RESULTADO AS
+(
+    SELECT
+        C.*,
+
+        ISNULL(M.ENTRADAS_SEMANA, 0) AS ENTRADAS_SEMANA,
+        ISNULL(M.SALIDAS_SEMANA, 0) AS SALIDAS_SEMANA,
+        ISNULL(M.SALIDAS_TRAENV_SEMANA, 0)
+            AS SALIDAS_TRAENV_SEMANA,
+
+        ISNULL(M.ENTRADAS_SEMANA, 0)
+        - ISNULL(M.SALIDAS_SEMANA, 0)
+            AS MOVIMIENTO_NETO_SEMANA
+
+    FROM CALENDARIO C
+
+    LEFT JOIN MOVIMIENTOS_SEMANALES M
+        ON C.TIENDA = M.TIENDA
+        AND C.ALMACEN = M.ALMACEN
+        AND C.AGRUP_RUBRO = M.AGRUP_RUBRO
+        AND C.MARCA = M.MARCA
+        AND C.ESTILO = M.ESTILO
+        AND C.INICIO_SEMANA = M.INICIO_SEMANA
+),
+
+SALDOS AS
+(
+    SELECT
+        R.*,
+
+        SALDO_INICIAL_PERIODO
+        + SUM(MOVIMIENTO_NETO_SEMANA) OVER
+        (
+            PARTITION BY
+                TIENDA, ALMACEN, AGRUP_RUBRO, MARCA, ESTILO
+            ORDER BY INICIO_SEMANA
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS EXISTENCIA_FINAL
+
+    FROM RESULTADO R
+)
+
+SELECT
+    TIENDA,
+    ALMACEN,
+
+    DATEDIFF(DAY, @FECHA_INICIO, INICIO_SEMANA) / 7 + 1
+        AS SEMANA_OPERACION,
+
+    INICIO_SEMANA,
+    FIN_SEMANA AS FECHA_CORTE,
+
+    AGRUP_RUBRO,
+    MARCA,
+    ESTILO,
+
+    SALDO_INICIAL_PERIODO,
+
+    EXISTENCIA_FINAL - MOVIMIENTO_NETO_SEMANA
+        AS EXISTENCIA_INICIO_SEMANA,
+
+    ENTRADAS_SEMANA,
+    SALIDAS_SEMANA,
+    SALIDAS_TRAENV_SEMANA,
+
+    SALIDAS_SEMANA - SALIDAS_TRAENV_SEMANA
+        AS OTRAS_SALIDAS_SEMANA,
+
+    MOVIMIENTO_NETO_SEMANA,
+    EXISTENCIA_FINAL,
+
+    PRIMERA_ENTRADA_REGISTRADA,
+    ULTIMA_ENTRADA_REGISTRADA,
+    ULTIMA_SALIDA_REGISTRADA
+
+FROM SALDOS
+
+-- Para revisar únicamente calzado:
+--WHERE AGRUP_RUBRO = 'CALZADO'
+
+ORDER BY
+    AGRUP_RUBRO,
+    MARCA,
+    ESTILO,
+    INICIO_SEMANA
+
+OPTION (MAXRECURSION 0);
