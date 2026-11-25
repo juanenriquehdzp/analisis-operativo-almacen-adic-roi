@@ -7,6 +7,7 @@
 #Publicaciones únicamente en PDF
 /Informes/*
 !/Informes/Diagnostico_ADIC_ROI_Compras_V3.pdf
+!/Informes/Existencias_picking_ROI.pdf
 
 # Archivos temporales de office
 ~$*
